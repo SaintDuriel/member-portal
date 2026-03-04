@@ -73,3 +73,10 @@ Output:
 - `ai-web-studio/outputs/release-plan.md`
 
 Each output file is stamped with run metadata (`run_utc`, `goal`, `apply_changes`) at the top.
+
+Pipeline behavior:
+- Architect, engineer, and implementation phases each emit their own report files.
+- QA phase receives those reports as explicit context.
+- Validation commands from the task file are executed by the runtime (not imagined by the model).
+- If implementation output is refusal/invalid, the run stops before QA (fail-fast).
+- If any validation command exits non-zero, the run fails with a summary of failing commands.

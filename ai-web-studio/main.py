@@ -201,14 +201,18 @@ def main() -> int:
         print("Code edit mode: ENABLED")
     else:
         print("Code edit mode: DISABLED (planning only)")
-    result = run_memberportal_crew(
-        goal=selected_goal,
-        repo_root=repo_root,
-        plan_file=Path(args.plan_file),
-        apply_changes=args.apply,
-        task_context=task_context,
-        required_outputs=required_outputs,
-    )
+    try:
+        result = run_memberportal_crew(
+            goal=selected_goal,
+            repo_root=repo_root,
+            plan_file=Path(args.plan_file),
+            apply_changes=args.apply,
+            task_context=task_context,
+            required_outputs=required_outputs,
+        )
+    except Exception as exc:
+        print(f"Crew run failed: {exc}")
+        return 1
 
     print("\n=== CrewAI Result ===\n")
     print(result.raw if hasattr(result, "raw") else result)

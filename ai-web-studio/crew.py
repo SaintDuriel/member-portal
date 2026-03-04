@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -201,39 +203,21 @@ def build_code_tools(repo_root: Path, allow_write: bool):
     return tools
 
 
-def build_memberportal_crew(
-    goal: str,
-    repo_root: Path = REPO_ROOT,
-    plan_file: Path = DEFAULT_PLAN_FILE,
-    apply_changes: bool = False,
-    task_context: str | None = None,
-    required_outputs: list[str] | None = None,
-) -> Crew:
-    dotenv_path = Path(__file__).with_name(".env")
-    load_dotenv(dotenv_path if dotenv_path.exists() else None)
-    snapshot = build_project_snapshot(repo_root)
-    llm = build_local_llm()
-    code_tools = build_code_tools(repo_root=repo_root, allow_write=apply_changes)
-    run_id = uuid4().hex[:8]
-    implementation_output, validation_output, output_targets = resolve_output_targets(
-        repo_root, required_outputs
-    )
-    task_context_block = (
-        f"{task_context.strip()}\n\n" if task_context and task_context.strip() else ""
-    )
-    output_targets_block = "Output files for this run:\n" + "\n".join(
+def _task_context_block(task_context: str | None) -> str:
+    return f"{task_context.strip()}\n\n" if task_context and task_context.strip() else ""
+
+
+def _output_targets_block(repo_root: Path, output_targets: list[Path]) -> str:
+    return "Output files for this run:\n" + "\n".join(
         f"- {path.relative_to(repo_root).as_posix()}" for path in output_targets
     )
-    plan_status = (
-        "found" if plan_file.exists() else f"missing ({plan_file.as_posix()})"
-    )
 
+
+def _build_agents(llm: LLM, code_tools: list) -> tuple[Agent, Agent, Agent, Agent]:
     architect = Agent(
         role="Product Delivery Architect",
         goal="Turn the current MemberPortal codebase and plan into a realistic execution strategy.",
-        backstory=(
-            "You are a senior architect who reconciles roadmap intent with the real state of the code."
-        ),
+        backstory="You reconcile roadmap intent with the real state of the code.",
         allow_delegation=False,
         verbose=False,
         llm=llm,
@@ -242,20 +226,7 @@ def build_memberportal_crew(
     engineer = Agent(
         role="Full-Stack Implementation Lead",
         goal="Translate strategy into an implementation sequence with concrete code-level steps.",
-        backstory=(
-            "You focus on executable changes for Next.js, Prisma, Auth.js, and Playwright workflows."
-        ),
-        allow_delegation=False,
-        verbose=False,
-        llm=llm,
-    )
-
-    qa = Agent(
-        role="Quality and Release Lead",
-        goal="Define validation gates so changes ship with low regression risk.",
-        backstory=(
-            "You build practical verification plans including E2E, auth checks, and release readiness."
-        ),
+        backstory="You focus on executable changes for Next.js, Prisma, Auth.js, and Playwright workflows.",
         allow_delegation=False,
         verbose=False,
         llm=llm,
@@ -264,14 +235,45 @@ def build_memberportal_crew(
     implementer = Agent(
         role="Repository Implementation Engineer",
         goal="Apply safe code changes to the repository based on the approved implementation plan.",
-        backstory=(
-            "You execute targeted edits, keep changes minimal, and avoid touching secrets or unrelated files."
-        ),
+        backstory="You execute targeted edits, keep changes minimal, and avoid touching secrets or unrelated files.",
         allow_delegation=False,
         verbose=False,
         llm=llm,
         tools=code_tools,
     )
+
+    qa = Agent(
+        role="Quality and Release Lead",
+        goal="Define validation gates so changes ship with low regression risk.",
+        backstory="You produce release decisions grounded in actual test/build execution evidence.",
+        allow_delegation=False,
+        verbose=False,
+        llm=llm,
+    )
+
+    return architect, engineer, implementer, qa
+
+
+def _build_implementation_phase_crew(
+    goal: str,
+    repo_root: Path,
+    plan_file: Path,
+    run_id: str,
+    apply_changes: bool,
+    task_context: str | None,
+    architecture_output: Path,
+    engineering_output: Path,
+    implementation_output: Path,
+) -> Crew:
+    snapshot = build_project_snapshot(repo_root)
+    llm = build_local_llm()
+    code_tools = build_code_tools(repo_root=repo_root, allow_write=apply_changes)
+    architect, engineer, implementer, _ = _build_agents(llm, code_tools)
+    task_context_block = _task_context_block(task_context)
+    output_targets_block = _output_targets_block(
+        repo_root, [architecture_output, engineering_output, implementation_output]
+    )
+    plan_status = "found" if plan_file.exists() else f"missing ({plan_file.as_posix()})"
 
     architecture_task = Task(
         description=(
@@ -281,17 +283,16 @@ def build_memberportal_crew(
             f"{task_context_block}"
             f"{output_targets_block}\n\n"
             f"Planning source status: {plan_status}\n\n"
-            "Use the code snapshot to identify what already exists and what is missing.\n"
+            "Produce the architect result only and keep it implementation-focused.\n"
             "Output:\n"
             "1) Current-state summary.\n"
             "2) Top implementation gaps.\n"
             "3) Prioritized execution phases with dependencies.\n\n"
             f"Snapshot:\n{snapshot}"
         ),
-        expected_output=(
-            "A markdown brief with current-state findings, key gaps, and a phased implementation strategy."
-        ),
+        expected_output="Architect report with gap analysis and execution phases.",
         agent=architect,
+        output_file=str(architecture_output),
     )
 
     implementation_task = Task(
@@ -300,19 +301,17 @@ def build_memberportal_crew(
             f"Project objective:\n{goal}\n\n"
             f"{task_context_block}"
             f"{output_targets_block}\n\n"
-            "Build a practical build plan from the architect output.\n"
-            "Include concrete file targets, commands, and sequencing.\n"
+            "Use the architect report to build a concrete execution backlog.\n"
             "Output:\n"
-            "1) Backlog grouped by platform area (auth, member portal, admin, tests, infra).\n"
-            "2) Acceptance criteria per backlog item.\n"
-            "3) First 5 execution tasks the team should perform next.\n"
-            "4) Quote the exact project objective in one line at the top."
+            "1) Backlog by platform area.\n"
+            "2) Acceptance criteria per item.\n"
+            "3) First 5 execution tasks.\n"
+            "4) Explicit file targets."
         ),
-        expected_output=(
-            "A technical backlog with file-level implementation notes and acceptance criteria."
-        ),
+        expected_output="Engineering implementation plan with explicit file targets.",
         agent=engineer,
         context=[architecture_task],
+        output_file=str(engineering_output),
     )
 
     code_edit_task = Task(
@@ -321,58 +320,190 @@ def build_memberportal_crew(
             f"Project objective:\n{goal}\n\n"
             f"{task_context_block}"
             f"{output_targets_block}\n\n"
-            "Use the implementation backlog to perform repository edits.\n"
+            "Apply repository edits from the engineering plan.\n"
             f"Apply mode: {'ENABLED' if apply_changes else 'DISABLED (planning-only)'}.\n"
             "Rules:\n"
             "1) Read files before editing.\n"
-            "2) Keep edits focused to the requested goal.\n"
-            "3) Do not modify any .env files or secrets.\n"
-            "4) Return a concise list of changed files and why.\n"
-            "If apply mode is disabled, produce a concrete patch plan with file-level edits but do not write files.\n"
-            "Always include the Run ID and project objective in the report.\n"
+            "2) Keep edits scoped to this task.\n"
+            "3) Never modify secrets or .env files.\n"
+            "4) Provide changed-file list and rationale.\n"
+            "5) If apply mode is disabled, output a concrete patch plan only.\n"
             f"Write this report to: {implementation_output.relative_to(repo_root).as_posix()}"
         ),
-        expected_output=(
-            "A markdown implementation report with changed files (or planned file edits in dry-run mode)."
-        ),
+        expected_output="Implementation report with concrete changes or patch plan.",
         agent=implementer,
-        context=[implementation_task],
+        context=[architecture_task, implementation_task],
         output_file=str(implementation_output),
     )
 
-    qa_task = Task(
-        description=(
-            f"Run ID: {run_id}\n"
-            f"Project objective:\n{goal}\n\n"
-            f"{task_context_block}"
-            f"{output_targets_block}\n\n"
-            "Create a release validation plan from the implementation backlog.\n"
-            "Output:\n"
-            "1) Automated checks to run in CI.\n"
-            "2) Manual smoke tests.\n"
-            "3) Go/No-Go criteria for deployment.\n"
-            "4) Risks and mitigations.\n"
-            "5) Explicitly reference at least three items from the implementation report.\n"
-            f"Write this report to: {validation_output.relative_to(repo_root).as_posix()}"
-        ),
-        expected_output=(
-            "A test and release checklist tailored to this MemberPortal codebase."
-        ),
-        agent=qa,
-        context=[implementation_task, code_edit_task],
-        output_file=str(validation_output),
-    )
-
     return Crew(
-        name=f"memberportal-{run_id}",
-        agents=[architect, engineer, implementer, qa],
-        tasks=[architecture_task, implementation_task, code_edit_task, qa_task],
+        name=f"memberportal-impl-{run_id}",
+        agents=[architect, engineer, implementer],
+        tasks=[architecture_task, implementation_task, code_edit_task],
         process=Process.sequential,
         verbose=False,
         cache=False,
         memory=False,
         tracing=False,
     )
+
+
+def _build_validation_phase_crew(
+    goal: str,
+    repo_root: Path,
+    run_id: str,
+    qa_context: str,
+    validation_output: Path,
+) -> Crew:
+    llm = build_local_llm()
+    code_tools = build_code_tools(repo_root=repo_root, allow_write=False)
+    _, _, _, qa = _build_agents(llm, code_tools)
+
+    qa_task = Task(
+        description=(
+            f"Run ID: {run_id}\n"
+            f"Project objective:\n{goal}\n\n"
+            "Produce release validation based only on provided implementation artifacts and command logs.\n\n"
+            f"{qa_context}\n\n"
+            "Output must include:\n"
+            "1) Automated checks outcome summary based on executed command logs.\n"
+            "2) Manual smoke checks still required.\n"
+            "3) Go/No-Go decision with rationale.\n"
+            "4) Risks and mitigations.\n"
+            "5) Explicit references to architect, engineering, and implementation outputs."
+        ),
+        expected_output="Validation report grounded in executed command evidence.",
+        agent=qa,
+        output_file=str(validation_output),
+    )
+
+    return Crew(
+        name=f"memberportal-qa-{run_id}",
+        agents=[qa],
+        tasks=[qa_task],
+        process=Process.sequential,
+        verbose=False,
+        cache=False,
+        memory=False,
+        tracing=False,
+    )
+
+
+def _extract_validation_commands(task_context: str | None) -> list[str]:
+    if not task_context:
+        return []
+    match = re.search(
+        r"##\s*Validation Commands\s*```(?:bash)?\s*(.*?)```",
+        task_context,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return []
+    raw = match.group(1)
+    commands: list[str] = []
+    for line in raw.splitlines():
+        command = line.strip()
+        if not command or command.startswith("#"):
+            continue
+        commands.append(command)
+    return commands
+
+
+def _truncate(text: str, max_chars: int = 6000) -> str:
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}\n...[truncated]..."
+
+
+def _run_validation_commands(repo_root: Path, commands: list[str]) -> list[dict[str, str | int]]:
+    results: list[dict[str, str | int]] = []
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", command],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60 * 30,
+                check=False,
+            )
+            results.append(
+                {
+                    "command": command,
+                    "exit_code": completed.returncode,
+                    "stdout": _truncate(completed.stdout or ""),
+                    "stderr": _truncate(completed.stderr or ""),
+                }
+            )
+        except subprocess.TimeoutExpired:
+            results.append(
+                {
+                    "command": command,
+                    "exit_code": 124,
+                    "stdout": "",
+                    "stderr": "Command timed out.",
+                }
+            )
+    return results
+
+
+def _format_command_log(results: list[dict[str, str | int]]) -> str:
+    lines = [
+        "# Executed Validation Command Logs",
+        "",
+        "| Command | Exit Code |",
+        "| --- | --- |",
+    ]
+    for item in results:
+        command = str(item["command"]).replace("|", "\\|")
+        lines.append(f"| `{command}` | {item['exit_code']} |")
+
+    for idx, item in enumerate(results, start=1):
+        lines.extend(
+            [
+                "",
+                f"## Command {idx}",
+                f"`{item['command']}`",
+                "",
+                "### Stdout",
+                "```text",
+                str(item["stdout"]),
+                "```",
+                "",
+                "### Stderr",
+                "```text",
+                str(item["stderr"]),
+                "```",
+            ]
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+def _is_invalid_implementation_output(text: str) -> bool:
+    normalized = text.lower()
+    refusal_patterns = [
+        "i'm sorry, but i can't assist",
+        "i cannot assist with that request",
+        "i can’t assist with that request",
+        '"response": "i\'m sorry',
+    ]
+    if any(pattern in normalized for pattern in refusal_patterns):
+        return True
+    content_only = normalized.strip()
+    return len(content_only) < 180
+
+
+def _append_file_header(path: Path, apply_changes: bool, goal: str) -> None:
+    run_stamp = datetime.now(timezone.utc).isoformat()
+    header = (
+        f"<!-- run_utc: {run_stamp} | apply_changes: {apply_changes} -->\n"
+        f"<!-- goal: {goal} -->\n\n"
+    )
+    content = path.read_text(encoding="utf-8") if path.exists() else ""
+    path.write_text(header + content, encoding="utf-8")
 
 
 def run_memberportal_crew(
@@ -383,28 +514,87 @@ def run_memberportal_crew(
     task_context: str | None = None,
     required_outputs: list[str] | None = None,
 ):
-    _, _, output_targets = resolve_output_targets(repo_root, required_outputs)
-    for target in output_targets:
+    dotenv_path = Path(__file__).with_name(".env")
+    load_dotenv(dotenv_path if dotenv_path.exists() else None)
+
+    implementation_output, validation_output, output_targets = resolve_output_targets(
+        repo_root, required_outputs
+    )
+    run_id = uuid4().hex[:8]
+    architecture_output = implementation_output.with_name(f"{implementation_output.stem}-architect.md")
+    engineering_output = implementation_output.with_name(f"{implementation_output.stem}-engineering.md")
+    command_log_output = validation_output.with_name(f"{validation_output.stem}-command-logs.md")
+
+    all_outputs = [architecture_output, engineering_output, implementation_output, validation_output, command_log_output]
+    for target in all_outputs:
         target.parent.mkdir(parents=True, exist_ok=True)
 
-    crew = build_memberportal_crew(
+    implementation_crew = _build_implementation_phase_crew(
         goal=goal,
         repo_root=repo_root,
         plan_file=plan_file,
+        run_id=run_id,
         apply_changes=apply_changes,
         task_context=task_context,
-        required_outputs=required_outputs,
+        architecture_output=architecture_output,
+        engineering_output=engineering_output,
+        implementation_output=implementation_output,
     )
-    result = crew.kickoff()
+    implementation_crew.kickoff()
 
-    run_stamp = datetime.now(timezone.utc).isoformat()
-    header = (
-        f"<!-- run_utc: {run_stamp} | apply_changes: {apply_changes} -->\n"
-        f"<!-- goal: {goal} -->\n\n"
+    implementation_text = implementation_output.read_text(encoding="utf-8") if implementation_output.exists() else ""
+    if _is_invalid_implementation_output(implementation_text):
+        _append_file_header(implementation_output, apply_changes, goal)
+        raise RuntimeError(
+            f"Fail-fast: implementation output is invalid/refusal in {implementation_output.relative_to(repo_root).as_posix()}."
+        )
+
+    validation_commands = _extract_validation_commands(task_context)
+    if task_context and not validation_commands:
+        raise RuntimeError("Fail-fast: task context provided but no 'Validation Commands' block could be parsed.")
+
+    command_results = _run_validation_commands(repo_root, validation_commands)
+    command_log_output.write_text(_format_command_log(command_results), encoding="utf-8")
+
+    commands_summary_lines = [
+        "Executed validation commands (system-generated):",
+        *[f"- `{item['command']}` -> exit {item['exit_code']}" for item in command_results],
+    ]
+    qa_context = "\n\n".join(
+        [
+            "Architect output:\n```markdown\n" + _read_excerpt(architecture_output, max_chars=12000) + "\n```",
+            "Engineering output:\n```markdown\n" + _read_excerpt(engineering_output, max_chars=12000) + "\n```",
+            "Implementation output:\n```markdown\n" + _read_excerpt(implementation_output, max_chars=12000) + "\n```",
+            "\n".join(commands_summary_lines),
+            "Command log file:\n" + command_log_output.relative_to(repo_root).as_posix(),
+        ]
     )
-    for target in output_targets:
+
+    validation_crew = _build_validation_phase_crew(
+        goal=goal,
+        repo_root=repo_root,
+        run_id=run_id,
+        qa_context=qa_context,
+        validation_output=validation_output,
+    )
+    validation_result = validation_crew.kickoff()
+
+    if command_results:
+        existing_validation = validation_output.read_text(encoding="utf-8") if validation_output.exists() else ""
+        validation_output.write_text(
+            existing_validation
+            + "\n\n## Executed Command Logs (System Generated)\n\n"
+            + _format_command_log(command_results),
+            encoding="utf-8",
+        )
+
+    failed_commands = [item for item in command_results if int(item["exit_code"]) != 0]
+    for target in [*output_targets, architecture_output, engineering_output, command_log_output]:
         if target.exists():
-            content = target.read_text(encoding="utf-8")
-            target.write_text(header + content, encoding="utf-8")
+            _append_file_header(target, apply_changes, goal)
 
-    return result
+    if failed_commands:
+        failed_list = ", ".join(f"`{item['command']}` (exit {item['exit_code']})" for item in failed_commands)
+        raise RuntimeError(f"Validation commands failed: {failed_list}")
+
+    return validation_result
