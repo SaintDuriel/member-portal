@@ -63,6 +63,23 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Task ID from ai-web-studio/tasks/task-manifest.yaml (example: T08).",
     )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=5,
+        help="Maximum implement+validate attempts per run (default: 5).",
+    )
+    parser.add_argument(
+        "--qa-test-mode",
+        default="tests-only",
+        choices=["tests-only"],
+        help="Validation test contribution mode (currently only: tests-only).",
+    )
+    parser.add_argument(
+        "--attempt-report-dir",
+        default="ai-web-studio/outputs/runs",
+        help="Directory where per-attempt artifacts are written.",
+    )
     return parser.parse_args()
 
 
@@ -201,6 +218,9 @@ def main() -> int:
         print("Code edit mode: ENABLED")
     else:
         print("Code edit mode: DISABLED (planning only)")
+    print(f"Max attempts: {args.max_attempts}")
+    print(f"QA test mode: {args.qa_test_mode}")
+    print(f"Attempt report dir: {args.attempt_report_dir}")
     try:
         result = run_memberportal_crew(
             goal=selected_goal,
@@ -209,6 +229,9 @@ def main() -> int:
             apply_changes=args.apply,
             task_context=task_context,
             required_outputs=required_outputs,
+            max_attempts=args.max_attempts,
+            qa_test_mode=args.qa_test_mode,
+            attempt_report_dir=args.attempt_report_dir,
         )
     except Exception as exc:
         print(f"Crew run failed: {exc}")
