@@ -1,0 +1,13 @@
+version: "3.9"
+services:
+  postgres:
+    image: postgres:16
+    container_name: guildsites_pg
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: guildsites
+      POSTGRES_PASSWORD: guildsites
+      POSTGRES_DB: guildsites
+    volumes:
+      - ./docker/postgres/data:/var/lib/postgresql/data

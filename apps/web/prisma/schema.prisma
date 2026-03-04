@@ -1,0 +1,189 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MembershipStatus {
+  PENDING
+  ACTIVE
+  BANNED
+}
+
+enum OrgRole {
+  MEMBER
+  ADMIN
+  OWNER
+}
+
+enum Visibility {
+  PRIVATE
+  MEMBERS
+  ADMINS
+}
+
+model Org {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  name      String
+  guildId   String
+  inviteUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+  resources   Resource[]
+  policies    PolicyVersion[]
+}
+
+model User {
+  id          String   @id @default(cuid())
+  discordId   String   @unique
+  email       String?  @unique
+  displayName String?
+  avatarUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships Membership[]
+  sessions    Session[]
+  accounts    Account[]
+}
+
+model Membership {
+  id                String           @id @default(cuid())
+  userId            String
+  orgId             String
+  status            MembershipStatus @default(ACTIVE)
+  role              OrgRole          @default(MEMBER)
+  discordUsername   String?
+  discordGlobalName String?
+  discordRoles      String[]         @default([])
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  profile          Profile?
+  acknowledgements Acknowledgement[]
+
+  user User @relation(fields: [userId], references: [id])
+  org  Org  @relation(fields: [orgId], references: [id])
+
+  @@unique([userId, orgId])
+  @@index([orgId, status, role])
+}
+
+model Profile {
+  id                        String     @id @default(cuid())
+  membershipId              String     @unique
+  phone                     String?
+  phoneVis                  Visibility @default(PRIVATE)
+  emergencyContactName      String?
+  emergencyContactNameVis   Visibility @default(ADMINS)
+  emergencyContactPhone     String?
+  emergencyContactPhoneVis  Visibility @default(ADMINS)
+  playaName                 String?
+  playaNameVis              Visibility @default(MEMBERS)
+  region                    String?
+  regionVis                 Visibility @default(MEMBERS)
+  bio                       String?
+  bioVis                    Visibility @default(MEMBERS)
+  createdAt                 DateTime   @default(now())
+  updatedAt                 DateTime   @updatedAt
+
+  membership Membership @relation(fields: [membershipId], references: [id])
+}
+
+enum ResourceType {
+  ARTICLE
+  LINK
+  FILE
+}
+
+model Resource {
+  id        String       @id @default(cuid())
+  orgId     String
+  type      ResourceType
+  title     String
+  slug      String
+  summary   String?
+  contentMd String?
+  url       String?
+  tags      String[]     @default([])
+  category  String?
+  isPublic  Boolean      @default(false)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  org Org @relation(fields: [orgId], references: [id])
+
+  @@unique([orgId, slug])
+  @@index([orgId, isPublic, category])
+}
+
+model PolicyVersion {
+  id        String   @id @default(cuid())
+  orgId     String
+  key       String
+  version   Int
+  title     String
+  contentMd String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  org              Org               @relation(fields: [orgId], references: [id])
+  acknowledgements Acknowledgement[]
+
+  @@unique([orgId, key, version])
+  @@index([orgId, key, isActive])
+}
+
+model Acknowledgement {
+  id             String   @id @default(cuid())
+  membershipId   String
+  policyId       String
+  acknowledgedAt DateTime @default(now())
+
+  membership Membership    @relation(fields: [membershipId], references: [id])
+  policy     PolicyVersion @relation(fields: [policyId], references: [id])
+
+  @@unique([membershipId, policyId])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  access_token      String?
+  token_type        String?
+  scope             String?
+  expires_at        Int?
+  refresh_token     String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}

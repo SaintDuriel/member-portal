@@ -1,0 +1,13 @@
+node_modules
+.pnpm-store
+.next
+coverage
+.env.local
+apps/web/.env
+apps/web/.env.local
+apps/web/.next
+apps/web/node_modules
+apps/web/playwright-report
+apps/web/test-results
+apps/web/.playwright
+docker/postgres/data

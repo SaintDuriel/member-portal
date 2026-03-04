@@ -1,0 +1,17 @@
+{
+  "name": "guild-sites",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "start": "pnpm --filter web start",
+    "lint": "pnpm --filter web lint",
+    "test": "pnpm --filter web test",
+    "test:e2e": "pnpm --filter web test:e2e",
+    "db:migrate": "pnpm -C apps/web exec prisma migrate dev",
+    "db:push": "pnpm -C apps/web exec prisma db push",
+    "db:seed": "pnpm -C apps/web exec prisma db seed"
+  }
+}
