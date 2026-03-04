@@ -11,3 +11,8 @@ apps/web/playwright-report
 apps/web/test-results
 apps/web/.playwright
 docker/postgres/data
+ai-web-studio/.env
+ai-web-studio/.venv
+ai-web-studio/__pycache__
+ai-web-studio/output
+ai-web-studio/outputs
