@@ -21,6 +21,7 @@ pip install -r ai-web-studio/requirements.txt
 ```
 
 `requirements.txt` includes `crewai[litellm]` so Ollama models work with CrewAI.
+It is pinned to a stable version to avoid the yanked `1.10.0` runtime warnings.
 
 3. Configure local model settings in `ai-web-studio/.env`:
 
@@ -39,6 +40,14 @@ Planning-only mode (default):
 - Agents produce architecture + implementation + QA outputs.
 - No repository files are modified.
 
+Task-pack mode (loads a predefined task file and required output filenames):
+
+```bash
+python ai-web-studio/main.py --task T08
+```
+
+Task IDs are defined in `ai-web-studio/tasks/task-manifest.yaml`.
+
 Apply mode:
 
 ```bash
@@ -55,9 +64,12 @@ Optional flags:
 
 ```bash
 python ai-web-studio/main.py --goal "Your objective" --plan-file "C:/path/to/AgentPlan.md" --model qwen2.5-coder:7b
+python ai-web-studio/main.py --task T08 --apply --model qwen2.5-coder:7b
 ```
 
 Output:
 - Console summary from the crew run
 - `ai-web-studio/outputs/implementation-report.md`
 - `ai-web-studio/outputs/release-plan.md`
+
+Each output file is stamped with run metadata (`run_utc`, `goal`, `apply_changes`) at the top.

@@ -15,4 +15,5 @@ ai-web-studio/.env
 ai-web-studio/.venv
 ai-web-studio/__pycache__
 ai-web-studio/output
+ai-web-studio/tasks
 ai-web-studio/outputs

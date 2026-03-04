@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import fnmatch
 import os
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai.tools import tool
@@ -28,6 +30,10 @@ FORBIDDEN_PATH_PATTERNS = [
     "**/.env.*",
     "**/node_modules/**",
     "**/.git/**",
+]
+DEFAULT_OUTPUT_FILES = [
+    "ai-web-studio/outputs/implementation-report.md",
+    "ai-web-studio/outputs/release-plan.md",
 ]
 
 
@@ -95,6 +101,31 @@ def _resolve_repo_path(repo_root: Path, relative_path: str) -> Path:
     if _is_forbidden_path(candidate, repo_root):
         raise ValueError("Access to this path is not allowed.")
     return candidate
+
+
+def _resolve_output_path(repo_root: Path, output_path: str) -> Path:
+    normalized = Path(output_path.strip().replace("\\", "/"))
+    candidate = normalized.resolve() if normalized.is_absolute() else (repo_root / normalized).resolve()
+    try:
+        candidate.relative_to(repo_root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"Output path escapes repository root: {output_path}") from exc
+    return candidate
+
+
+def resolve_output_targets(repo_root: Path, required_outputs: list[str] | None) -> tuple[Path, Path, list[Path]]:
+    output_paths: list[Path] = []
+    for configured_path in (required_outputs or []):
+        if configured_path.strip():
+            output_paths.append(_resolve_output_path(repo_root, configured_path))
+
+    if not output_paths:
+        output_paths = [_resolve_output_path(repo_root, item) for item in DEFAULT_OUTPUT_FILES]
+
+    if len(output_paths) == 1:
+        output_paths.append(_resolve_output_path(repo_root, DEFAULT_OUTPUT_FILES[1]))
+
+    return output_paths[0], output_paths[1], output_paths
 
 
 def build_code_tools(repo_root: Path, allow_write: bool):
@@ -175,12 +206,24 @@ def build_memberportal_crew(
     repo_root: Path = REPO_ROOT,
     plan_file: Path = DEFAULT_PLAN_FILE,
     apply_changes: bool = False,
+    task_context: str | None = None,
+    required_outputs: list[str] | None = None,
 ) -> Crew:
     dotenv_path = Path(__file__).with_name(".env")
     load_dotenv(dotenv_path if dotenv_path.exists() else None)
     snapshot = build_project_snapshot(repo_root)
     llm = build_local_llm()
     code_tools = build_code_tools(repo_root=repo_root, allow_write=apply_changes)
+    run_id = uuid4().hex[:8]
+    implementation_output, validation_output, output_targets = resolve_output_targets(
+        repo_root, required_outputs
+    )
+    task_context_block = (
+        f"{task_context.strip()}\n\n" if task_context and task_context.strip() else ""
+    )
+    output_targets_block = "Output files for this run:\n" + "\n".join(
+        f"- {path.relative_to(repo_root).as_posix()}" for path in output_targets
+    )
     plan_status = (
         "found" if plan_file.exists() else f"missing ({plan_file.as_posix()})"
     )
@@ -232,8 +275,11 @@ def build_memberportal_crew(
 
     architecture_task = Task(
         description=(
+            f"Run ID: {run_id}\n"
             "Project objective:\n"
             f"{goal}\n\n"
+            f"{task_context_block}"
+            f"{output_targets_block}\n\n"
             f"Planning source status: {plan_status}\n\n"
             "Use the code snapshot to identify what already exists and what is missing.\n"
             "Output:\n"
@@ -250,12 +296,17 @@ def build_memberportal_crew(
 
     implementation_task = Task(
         description=(
+            f"Run ID: {run_id}\n"
+            f"Project objective:\n{goal}\n\n"
+            f"{task_context_block}"
+            f"{output_targets_block}\n\n"
             "Build a practical build plan from the architect output.\n"
             "Include concrete file targets, commands, and sequencing.\n"
             "Output:\n"
             "1) Backlog grouped by platform area (auth, member portal, admin, tests, infra).\n"
             "2) Acceptance criteria per backlog item.\n"
-            "3) First 5 execution tasks the team should perform next."
+            "3) First 5 execution tasks the team should perform next.\n"
+            "4) Quote the exact project objective in one line at the top."
         ),
         expected_output=(
             "A technical backlog with file-level implementation notes and acceptance criteria."
@@ -266,6 +317,10 @@ def build_memberportal_crew(
 
     code_edit_task = Task(
         description=(
+            f"Run ID: {run_id}\n"
+            f"Project objective:\n{goal}\n\n"
+            f"{task_context_block}"
+            f"{output_targets_block}\n\n"
             "Use the implementation backlog to perform repository edits.\n"
             f"Apply mode: {'ENABLED' if apply_changes else 'DISABLED (planning-only)'}.\n"
             "Rules:\n"
@@ -273,38 +328,50 @@ def build_memberportal_crew(
             "2) Keep edits focused to the requested goal.\n"
             "3) Do not modify any .env files or secrets.\n"
             "4) Return a concise list of changed files and why.\n"
-            "If apply mode is disabled, produce a concrete patch plan with file-level edits but do not write files."
+            "If apply mode is disabled, produce a concrete patch plan with file-level edits but do not write files.\n"
+            "Always include the Run ID and project objective in the report.\n"
+            f"Write this report to: {implementation_output.relative_to(repo_root).as_posix()}"
         ),
         expected_output=(
             "A markdown implementation report with changed files (or planned file edits in dry-run mode)."
         ),
         agent=implementer,
         context=[implementation_task],
-        output_file=str((repo_root / "ai-web-studio" / "outputs" / "implementation-report.md")),
+        output_file=str(implementation_output),
     )
 
     qa_task = Task(
         description=(
+            f"Run ID: {run_id}\n"
+            f"Project objective:\n{goal}\n\n"
+            f"{task_context_block}"
+            f"{output_targets_block}\n\n"
             "Create a release validation plan from the implementation backlog.\n"
             "Output:\n"
             "1) Automated checks to run in CI.\n"
             "2) Manual smoke tests.\n"
             "3) Go/No-Go criteria for deployment.\n"
-            "4) Risks and mitigations."
+            "4) Risks and mitigations.\n"
+            "5) Explicitly reference at least three items from the implementation report.\n"
+            f"Write this report to: {validation_output.relative_to(repo_root).as_posix()}"
         ),
         expected_output=(
             "A test and release checklist tailored to this MemberPortal codebase."
         ),
         agent=qa,
         context=[implementation_task, code_edit_task],
-        output_file=str((repo_root / "ai-web-studio" / "outputs" / "release-plan.md")),
+        output_file=str(validation_output),
     )
 
     return Crew(
+        name=f"memberportal-{run_id}",
         agents=[architect, engineer, implementer, qa],
         tasks=[architecture_task, implementation_task, code_edit_task, qa_task],
         process=Process.sequential,
         verbose=False,
+        cache=False,
+        memory=False,
+        tracing=False,
     )
 
 
@@ -313,13 +380,31 @@ def run_memberportal_crew(
     repo_root: Path = REPO_ROOT,
     plan_file: Path = DEFAULT_PLAN_FILE,
     apply_changes: bool = False,
+    task_context: str | None = None,
+    required_outputs: list[str] | None = None,
 ):
-    output_dir = repo_root / "ai-web-studio" / "outputs"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    _, _, output_targets = resolve_output_targets(repo_root, required_outputs)
+    for target in output_targets:
+        target.parent.mkdir(parents=True, exist_ok=True)
+
     crew = build_memberportal_crew(
         goal=goal,
         repo_root=repo_root,
         plan_file=plan_file,
         apply_changes=apply_changes,
+        task_context=task_context,
+        required_outputs=required_outputs,
     )
-    return crew.kickoff()
+    result = crew.kickoff()
+
+    run_stamp = datetime.now(timezone.utc).isoformat()
+    header = (
+        f"<!-- run_utc: {run_stamp} | apply_changes: {apply_changes} -->\n"
+        f"<!-- goal: {goal} -->\n\n"
+    )
+    for target in output_targets:
+        if target.exists():
+            content = target.read_text(encoding="utf-8")
+            target.write_text(header + content, encoding="utf-8")
+
+    return result
