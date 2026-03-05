@@ -11,9 +11,9 @@ apps/web/playwright-report
 apps/web/test-results
 apps/web/.playwright
 docker/postgres/data
-ai-web-studio/.env
-ai-web-studio/.venv
-ai-web-studio/__pycache__
-ai-web-studio/output
-ai-web-studio/tasks
-ai-web-studio/outputs
+software_developer_crew/.env
+software_developer_crew/.venv
+software_developer_crew/__pycache__
+software_developer_crew/output
+software_developer_crew/tasks
+software_developer_crew/outputs
